@@ -33,7 +33,7 @@ SOFTWARE.
 #define BAUD_RATE 115200
 
 /* Measurement interval for temperature in seconds */
-#define MEASUREMENT_INTERVAL 5
+#define MEASUREMENT_INTERVAL 60
 
 /* Filename for data */
 #define DATA_FILENAME "DATA.CSV"
@@ -159,6 +159,8 @@ DS18B20 my_ds18b20(PIN_DS18B20_DATA);
 // store address of DS18B20 during setup call
 uint64_t ds18b20_addr;
 
+uint8_t flag_tick, flag_measure;
+
 // - PT1000 analogue ADC if using Wheastone bridge
 #ifdef TEMP_MODE_WHEATSTONE
 
@@ -205,22 +207,24 @@ void setup() {
   Serial.begin(BAUD_RATE);
   SerialDebug.begin(BAUD_RATE);
 
+  CRYO_DEBUG_MESSAGE("Starting up...");
+
   /* ---------------- CONFIGURE PINS ---------------- */
   // Configure analogue input if using potential divider 
   #ifdef TEMP_MODE_POTENTIAL
     pinMode(PIN_WHEAT_IN_POS, INPUT);
   #endif
 
-  /* ---------------- INIT POWER ---------------- */
+  // /* ---------------- INIT POWER ---------------- */
   if (!cryo_power_init()) {
     CRYO_DEBUG_MESSAGE("Failed to initialise INA3221");
     cryo_error(CRYO_ERROR_INA3221_INIT);
   }
   delay(50);
 
-  /* ---------------- CONFIGURE RTC ---------------- */
+  // /* ---------------- CONFIGURE RTC ---------------- */
   CRYO_DEBUG_MESSAGE("Configuring clock");
-  cryo_configure_clock(__DATE__, __TIME__);
+  cryo_configure_clock(__DATE__, __TIME__, MEASUREMENT_INTERVAL);
 
   CRYO_DEBUG_MESSAGE("Getting real-time clock");
   my_rtc = cryo_get_rtc();
@@ -246,6 +250,7 @@ void setup() {
   pinMode(PIN_WHEAT_EN, OUTPUT);
 
   /* ---------------- SETUP DS18B20 ---------------- */
+  CRYO_DEBUG_MESSAGE("Initialising DS18B20");
   if (!my_ds18b20.selectNext()) {
     CRYO_DEBUG_MESSAGE("Failed to initialise DS18B20 sensor");
     cryo_error(CRYO_ERROR_DS18B20_INIT);
@@ -257,17 +262,101 @@ void setup() {
   temperature_ds18b20 = NAN;
   temperature_pt1000 = NAN;
 
-  /* ---------------- ADD MEASUREMENT ALARM ---------------- */
-  cryo_add_alarm_every(MEASUREMENT_INTERVAL, datalogger_tasks);
+  CRYO_DEBUG_MESSAGE("Starting CryoSkills datalogger...");
+  cryo_reset_alarm();
+
+}
+
+// void EVSYS_Handler(void) {
+
+//   if (EVSYS->INTFLAG.bit.EVD0) {
+//     SerialDebug.println("Tick");
+//   } else {
+//     SerialDebug.println("Other event");
+//   }
+    
+// }
+
+void EVSYS_Handler(void) {
+
+  if (EVSYS->INTFLAG.bit.EVD0) {
+    EVSYS->INTFLAG.bit.EVD0 = 1;
+    flag_tick = 1;
+  }
+    
+}
+
+void RTC_Handler(void) {
   
+  if (RTC->MODE2.INTFLAG.bit.ALARM0) {
+    RTC->MODE2.INTFLAG.bit.ALARM0 = 1;
+    flag_measure = 1;
+  } else {
+    SerialDebug.println("oh no");
+  }
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   cryo_wakeup();
-  // Serial.begin(BAUD_RATE);
-  // SerialDebug.begin(BAUD_RATE);
-  cryo_raise_alarms();
+
+  // Blink
+  if (flag_tick) {
+    flag_tick = 0;
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+
+  // Measurement
+  if (flag_measure) {
+
+    cryo_reset_alarm();
+    flag_measure = 0;
+    CRYO_DEBUG_MESSAGE("Measuring!");
+    // RTC->MODE2.INTFLAG.bit.ALARM0 = 1;
+    datalogger_tasks();
+    // cryo_reset_alarm();
+  }
+
+  CRYO_DEBUG_MESSAGE("Delay");
+  REG_RTC_READREQ |= 1; // start read request
+  while (REG_RTC_STATUS & 0b10000000) {;}
+  uint32_t myDT = REG_RTC_MODE2_CLOCK;
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_MONTH_Msk) >> RTC_MODE2_CLOCK_MONTH_Pos );
+  SerialDebug.print("/");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_DAY_Msk) >> RTC_MODE2_CLOCK_DAY_Pos );
+  SerialDebug.print("/");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_YEAR_Msk) >> RTC_MODE2_CLOCK_YEAR_Pos );
+  SerialDebug.print(" ");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_HOUR_Msk) >> RTC_MODE2_CLOCK_HOUR_Pos );
+  SerialDebug.print(":");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_MINUTE_Msk) >> RTC_MODE2_CLOCK_MINUTE_Pos );
+  SerialDebug.print(":");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_SECOND_Msk) >> RTC_MODE2_CLOCK_SECOND_Pos );
+  SerialDebug.println();
+
+  CRYO_DEBUG_MESSAGE("Alarm");
+  REG_RTC_READREQ |= 1; // start read request
+  while (REG_RTC_STATUS & 0b10000000) {;}
+  myDT = REG_RTC_MODE2_ALARM_ALARM0;
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_MONTH_Msk) >> RTC_MODE2_CLOCK_MONTH_Pos );
+  SerialDebug.print("/");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_DAY_Msk) >> RTC_MODE2_CLOCK_DAY_Pos );
+  SerialDebug.print("/");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_YEAR_Msk) >> RTC_MODE2_CLOCK_YEAR_Pos );
+  SerialDebug.print(" ");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_HOUR_Msk) >> RTC_MODE2_CLOCK_HOUR_Pos );
+  SerialDebug.print(":");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_MINUTE_Msk) >> RTC_MODE2_CLOCK_MINUTE_Pos );
+  SerialDebug.print(":");
+  SerialDebug.print( (myDT & RTC_MODE2_CLOCK_SECOND_Msk) >> RTC_MODE2_CLOCK_SECOND_Pos );
+  SerialDebug.println();
+  SerialDebug.flush();
+
+  // delay(1000);
+
   cryo_sleep();
 }
 
